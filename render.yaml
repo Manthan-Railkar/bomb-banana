@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: bomb-squad-server
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @bomb-squad/shared build && pnpm --filter @bomb-squad/server build
+    startCommand: node apps/server/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: REDIS_URL
+        value: memory
+      - key: DATABASE_URL
+        value: memory
+      - key: LIVEKIT_URL
+        value: ws://localhost:7880
+      - key: LIVEKIT_SERVER_URL
+        value: http://localhost:7880
+      - key: LIVEKIT_API_KEY
+        value: devkey
+      - key: LIVEKIT_API_SECRET
+        value: devsecret
+      - key: TURN_SECRET
+        value: changeme
+      - key: TURN_TTL
+        value: "86400"

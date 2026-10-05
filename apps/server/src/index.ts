@@ -7,6 +7,8 @@ import { config } from './config/index.js';
 import { healthRegistry } from './health/index.js';
 import { connectRedis } from './state/index.js';
 import { connectPostgres } from './persistence/index.js';
+import { memoryRedis, noopArchive } from './testing/bootTestServer.js';
+import type { RedisStore } from './state/redis.js';
 import { registerSessionHandlers, type SessionSocketData } from './handlers/sessionHandlers.js';
 import { registerManualHandlers } from './handlers/manualHandlers.js';
 import { registerLifelineHandlers } from './handlers/lifelineHandlers.js';
@@ -68,22 +70,41 @@ async function start(): Promise<void> {
   // Connect data stores. A store that is down at boot must NOT crash start() —
   // we catch/log and continue so /health is reachable and reports 503.
   // Contrast Story 1.4: bad config exits (unrecoverable); a down store waits (recoverable).
-  const { client: redisClient, store: redisStore } = connectRedis(config.REDIS_URL);
-  const { pool, archive } = connectPostgres(config.DATABASE_URL);
+  // If REDIS_URL='memory' (or USE_IN_MEMORY_STORE='true'), use in-memory store for zero-database deployment.
+  const isMemoryStore = config.REDIS_URL === 'memory' || process.env.USE_IN_MEMORY_STORE === 'true';
 
-  try {
-    await redisClient.connect();
-  } catch (err) {
-    fastify.log.error(err, 'redis initial connect failed — will retry in background');
-  }
+  let redisClient: ReturnType<typeof connectRedis>['client'] | null = null;
+  let redisStore: RedisStore;
+  let pool: ReturnType<typeof connectPostgres>['pool'] | null = null;
+  let archive: ReturnType<typeof connectPostgres>['archive'];
 
-  // Create the session-archive schema at boot (Story 8.10). Best-effort: a
-  // Postgres-down-at-boot start must not crash (mirrors the redis-connect catch) —
-  // `archiveSession` re-ensures the schema lazily on the first session end.
-  try {
-    await archive.ensureSchema();
-  } catch (err) {
-    fastify.log.error(err, 'postgres schema bootstrap failed — will retry at first session end');
+  if (isMemoryStore) {
+    fastify.log.info('Using in-memory Redis store and noop archive (Docker-free / memory mode)');
+    redisStore = memoryRedis();
+    archive = noopArchive();
+  } else {
+    const redisConn = connectRedis(config.REDIS_URL);
+    redisClient = redisConn.client;
+    redisStore = redisConn.store;
+
+    const pgConn = connectPostgres(config.DATABASE_URL);
+    pool = pgConn.pool;
+    archive = pgConn.archive;
+
+    try {
+      await redisClient.connect();
+    } catch (err) {
+      fastify.log.error(err, 'redis initial connect failed — will retry in background');
+    }
+
+    // Create the session-archive schema at boot (Story 8.10). Best-effort: a
+    // Postgres-down-at-boot start must not crash (mirrors the redis-connect catch) —
+    // `archiveSession` re-ensures the schema lazily on the first session end.
+    try {
+      await archive.ensureSchema();
+    } catch (err) {
+      fastify.log.error(err, 'postgres schema bootstrap failed — will retry at first session end');
+    }
   }
 
   // Register readiness probes into the health registry (boot path, not module-load,
@@ -203,12 +224,16 @@ async function start(): Promise<void> {
         if (err?.code !== 'ERR_SERVER_NOT_RUNNING') throw err;
       });
       // Close stores after HTTP/socket layer is down (no new work can arrive).
-      await redisClient.quit().catch((err: Error) => {
-        fastify.log.error(err, 'error closing redis');
-      });
-      await pool.end().catch((err: Error) => {
-        fastify.log.error(err, 'error closing postgres pool');
-      });
+      if (redisClient) {
+        await redisClient.quit().catch((err: Error) => {
+          fastify.log.error(err, 'error closing redis');
+        });
+      }
+      if (pool) {
+        await pool.end().catch((err: Error) => {
+          fastify.log.error(err, 'error closing postgres pool');
+        });
+      }
       process.exit(0);
     } catch (err) {
       fastify.log.error(err, 'error during shutdown');

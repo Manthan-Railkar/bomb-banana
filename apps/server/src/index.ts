@@ -1,0 +1,233 @@
+import { fileURLToPath } from 'node:url';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { type TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
+import { Server as SocketIOServer, type DefaultEventsMap } from 'socket.io';
+import type { ClientToServerEvents, ServerToClientEvents } from '@bomb-squad/shared';
+import { config } from './config/index.js';
+import { healthRegistry } from './health/index.js';
+import { connectRedis } from './state/index.js';
+import { connectPostgres } from './persistence/index.js';
+import { registerSessionHandlers, type SessionSocketData } from './handlers/sessionHandlers.js';
+import { registerManualHandlers } from './handlers/manualHandlers.js';
+import { registerLifelineHandlers } from './handlers/lifelineHandlers.js';
+import { registerVoiceHandlers } from './handlers/voiceHandlers.js';
+import { registerModuleHandlers } from './handlers/moduleHandlers.js';
+import { LoungeBridge } from './voice/loungeBridge.js';
+import { createLoungeRelayBot } from './voice/loungeRelayBot.js';
+import { createTimerScheduler } from './timer/index.js';
+
+/** A typed Socket.IO server. Generic order is `<ClientToServer, ServerToClient>` (incoming first). */
+export type AppIOServer = SocketIOServer<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  DefaultEventsMap,
+  SessionSocketData
+>;
+
+export interface BuiltServer {
+  fastify: FastifyInstance;
+  io: AppIOServer;
+}
+
+/**
+ * Build the Fastify host with the `/health` route and a typed Socket.IO server
+ * attached to its underlying HTTP server. Pure construction — does not listen,
+ * so tests can drive it with `fastify.inject()` without binding a port.
+ */
+export async function buildServer(): Promise<BuiltServer> {
+  const fastify = Fastify({ logger: true }).withTypeProvider<TypeBoxTypeProvider>();
+
+  fastify.get('/health', async (_request, reply) => {
+    const report = await healthRegistry.runAll();
+    if (report.healthy) {
+      return reply.code(200).send({ status: 'ok', checks: report.checks });
+    }
+    return reply.code(503).send({ status: 'unhealthy', checks: report.checks });
+  });
+
+  // Attach Socket.IO to Fastify's underlying Node HTTP server, BEFORE listen().
+  // Generic order: Server<ClientToServerEvents, ServerToClientEvents> — the client swaps them.
+  const io: AppIOServer = new SocketIOServer<
+    ClientToServerEvents,
+    ServerToClientEvents,
+    DefaultEventsMap,
+    SessionSocketData
+  >(fastify.server, { cors: { origin: true } });
+  io.on('connection', (socket) => {
+    // No game handlers yet — those land in Story 1.6+. Just a liveness breadcrumb.
+    fastify.log.debug({ socketId: socket.id }, 'socket connected');
+  });
+
+  return { fastify, io };
+}
+
+/** Boot the server: validate config (already done by the `config` import), then listen. */
+async function start(): Promise<void> {
+  const { fastify, io } = await buildServer();
+
+  // Connect data stores. A store that is down at boot must NOT crash start() —
+  // we catch/log and continue so /health is reachable and reports 503.
+  // Contrast Story 1.4: bad config exits (unrecoverable); a down store waits (recoverable).
+  const { client: redisClient, store: redisStore } = connectRedis(config.REDIS_URL);
+  const { pool, archive } = connectPostgres(config.DATABASE_URL);
+
+  try {
+    await redisClient.connect();
+  } catch (err) {
+    fastify.log.error(err, 'redis initial connect failed — will retry in background');
+  }
+
+  // Create the session-archive schema at boot (Story 8.10). Best-effort: a
+  // Postgres-down-at-boot start must not crash (mirrors the redis-connect catch) —
+  // `archiveSession` re-ensures the schema lazily on the first session end.
+  try {
+    await archive.ensureSchema();
+  } catch (err) {
+    fastify.log.error(err, 'postgres schema bootstrap failed — will retry at first session end');
+  }
+
+  // Register readiness probes into the health registry (boot path, not module-load,
+  // so adapter files stay import-safe for unit tests — mirrors the parseEnv/config split).
+  healthRegistry.register('redis', async () => {
+    const ok = await redisStore.ping();
+    return { ok, ...(ok ? {} : { detail: 'redis PING failed' }) };
+  });
+  healthRegistry.register('postgres', async () => {
+    const ok = await archive.ping();
+    return { ok, ...(ok ? {} : { detail: 'postgres SELECT 1 failed' }) };
+  });
+
+  // Story 3.7: the Bomb Room → Spectator Lounge one-way audio bridge, run by a
+  // per-session `@livekit/rtc-node` relay bot (forwardParticipant is unimplemented
+  // on self-hosted LiveKit — see loungeRelayBot.ts). The bot connects to LiveKit's
+  // ws:// signaling endpoint FROM THE SERVER, so its URL is derived from
+  // LIVEKIT_SERVER_URL (server-reachable) by swapping the http(s) scheme for ws(s)
+  // — distinct from the browser ws://localhost LIVEKIT_URL. Best-effort: a LiveKit
+  // hiccup never blocks a game transition (handlers call it after the authoritative
+  // emit). Constructed BEFORE the timer + handlers so they can drive its teardown
+  // on a round resolving into between-rounds.
+  const loungeBridge = new LoungeBridge(
+    {
+      wsUrl: config.LIVEKIT_SERVER_URL.replace(/^http/, 'ws'),
+      apiKey: config.LIVEKIT_API_KEY,
+      apiSecret: config.LIVEKIT_API_SECRET,
+    },
+    fastify.log,
+    createLoungeRelayBot,
+  );
+
+  // Server-authoritative timer scheduler (Story 8.4) — owns the wall clock and
+  // the setTimeout-backed expiry wakes. Constructed here (needs the connected
+  // store + the live io) and disposed in shutdown() before io.close(). Threads the
+  // bridge so a time-expired resolution tears down the lounge forward (Story 3.7).
+  const timerScheduler = createTimerScheduler({ redis: redisStore, io, log: fastify.log, loungeBridge });
+
+  // Connection gate: reject Socket.IO handshakes while any store is unhealthy.
+  // Per-connection runAll() is acceptable in V1 (infrequent handshakes).
+  // Future optimization: cache the last readiness result with a ~1 s TTL.
+  //
+  // ORDER MATTERS (Story 2.7): this readiness gate MUST register before
+  // registerSessionHandlers, whose identity middleware (io.use) reads Redis to
+  // resolve a reattach token. Socket.IO runs connection middleware in
+  // registration order, so registering readiness first guarantees a Redis-down
+  // server rejects the handshake BEFORE the identity middleware touches Redis.
+  io.use(async (_socket, next) => {
+    try {
+      const { healthy } = await healthRegistry.runAll();
+      if (healthy) return next();
+      next(new Error('SERVER_NOT_READY'));
+    } catch (err) {
+      // runAll() normalizes per-probe failures, so this is defense-in-depth: an
+      // unexpected throw must still reject the handshake, never leave next() uncalled
+      // (which would wedge the connection silently).
+      fastify.log.error(err, 'readiness gate error — rejecting handshake');
+      next(new Error('SERVER_NOT_READY'));
+    }
+  });
+
+  // Game socket handlers. Registered here (not in buildServer) so buildServer
+  // stays pure construction — handlers need the connected Redis store. The
+  // identity middleware inside registerSessionHandlers registers AFTER the
+  // readiness gate above (see ORDER MATTERS note).
+  registerSessionHandlers(io, {
+    redis: redisStore,
+    log: fastify.log,
+    timer: timerScheduler,
+    archive,
+    loungeBridge,
+  });
+  registerManualHandlers(io, { redis: redisStore, log: fastify.log });
+  registerLifelineHandlers(io, { redis: redisStore, log: fastify.log });
+  registerModuleHandlers(io, {
+    redis: redisStore,
+    log: fastify.log,
+    timer: timerScheduler,
+    archive,
+    loungeBridge,
+  });
+  registerVoiceHandlers(io, {
+    redis: redisStore,
+    log: fastify.log,
+    config: {
+      LIVEKIT_URL: config.LIVEKIT_URL,
+      LIVEKIT_API_KEY: config.LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET: config.LIVEKIT_API_SECRET,
+      TURN_TTL: config.TURN_TTL,
+      TURN_SECRET: config.TURN_SECRET,
+      TURN_URL: config.TURN_URL,
+    },
+  });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    fastify.log.info({ signal }, 'shutting down');
+    try {
+      // Clear all pending expiry wakes BEFORE io.close() so no scheduled
+      // timer can fire `io.to(...).emit` into a closing server (Story 8.4).
+      timerScheduler.dispose();
+      // `io.close()` disconnects clients AND closes the underlying HTTP server
+      // (Socket.IO was attached to `fastify.server`). Await it and surface any
+      // error it reports rather than discarding the callback argument.
+      await new Promise<void>((resolveClose) => {
+        io.close((err?: Error) => {
+          if (err) fastify.log.error(err, 'error closing Socket.IO');
+          resolveClose();
+        });
+      });
+      // The HTTP server is already closed by `io.close()`; `fastify.close()` runs
+      // the onClose hooks. Tolerate the expected "already not running" error so a
+      // clean shutdown still exits 0.
+      await fastify.close().catch((err: NodeJS.ErrnoException) => {
+        if (err?.code !== 'ERR_SERVER_NOT_RUNNING') throw err;
+      });
+      // Close stores after HTTP/socket layer is down (no new work can arrive).
+      await redisClient.quit().catch((err: Error) => {
+        fastify.log.error(err, 'error closing redis');
+      });
+      await pool.end().catch((err: Error) => {
+        fastify.log.error(err, 'error closing postgres pool');
+      });
+      process.exit(0);
+    } catch (err) {
+      fastify.log.error(err, 'error during shutdown');
+      process.exit(1);
+    }
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  await fastify.ready();
+  await fastify.listen({ port: config.PORT, host: '0.0.0.0' });
+}
+
+// Only boot when run directly (e.g. `tsx src/index.ts` / `node dist/index.js`),
+// never when imported by tests.
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  start().catch((err: unknown) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

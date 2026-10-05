@@ -1,0 +1,126 @@
+import { useEffect } from 'react';
+import { createSocket } from './net/socket.js';
+import { bindServerEvents } from './net/bindServerEvents.js';
+import { applyAuthFromIdentity, getIdentity } from './net/identity.js';
+import { createProductionModuleDispatch } from './net/productionDispatch.js';
+import { setModuleActionDispatch } from './modules/dispatch.js';
+import { useGameStore } from './store/gameStore.js';
+import {
+  ActiveRound,
+  AppShell,
+  Landing,
+  Lobby,
+  LoadingScreen,
+  PlatformGate,
+  Preparation,
+  Scoreboard,
+  FinalScoreboard,
+} from './ui/index.js';
+import { CONNECTING } from './ui/copy.js';
+import DevBombHarness from './scenes/DevBombHarness.js';
+import SandboxHarness from './sandbox/SandboxHarness.js';
+import DevManualHarness from './manual/DevManualHarness.js';
+import { registerE2eStateHook } from './scenes/E2eSceneHook.js';
+
+// e2e state hook (TD-6) — dev builds only; registration, not logic. Canvas-
+// independent so Playwright waits can read session status across surface swaps.
+if (import.meta.env.DEV) registerE2eStateHook();
+
+// Production builds are served through Caddy, which proxies /socket.io/* to
+// the game server — same-origin works on any domain without baking a URL into
+// the image. Host-run dev serves client (5173) and server (3001) separately,
+// so dev keeps the explicit localhost default.
+// `||` (not `??`) so an empty VITE_SERVER_URL= line in .env also falls back.
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL ||
+  (import.meta.env.DEV ? 'http://localhost:3001' : window.location.origin);
+
+export default function App() {
+  const connection = useGameStore((s) => s.connection);
+  const session = useGameStore((s) => s.session);
+
+  useEffect(() => {
+    // StrictMode double-invokes this effect in dev — autoConnect:false + explicit
+    // connect/disconnect makes the lifecycle idempotent.
+    useGameStore.getState().setConnection('connecting');
+    const socket = createSocket(SERVER_URL);
+    const unbind = bindServerEvents(socket);
+    // Story 2.7: replay a stored reattach token via the handshake auth so a
+    // refresh re-attaches to the same player record (set BEFORE connect). Seed
+    // the reactive self-id from storage so the "You" tag is correct on the very
+    // first render after a refresh (before SESSION_IDENTITY re-arrives).
+    applyAuthFromIdentity(socket);
+    useGameStore.getState().setMyPlayerId(getIdentity()?.playerId ?? null);
+    socket.connect();
+
+    // Production module-action backend (Story 4.7): DefuserView dispatches become
+    // MODULE_INTERACT emits the server reduces/broadcasts. NEVER on /dev/sandbox —
+    // that route installs its own LOCAL reducer backend (SandboxHarness) and must
+    // not be overwritten. Resets to null on teardown (symmetry with unbind) so a
+    // stale socket can't be emitted into after disconnect.
+    const onSandboxRoute = window.location.pathname === '/dev/sandbox';
+    if (!onSandboxRoute) setModuleActionDispatch(createProductionModuleDispatch());
+
+    return () => {
+      // unbind() removes the 'disconnect' listener before disconnect() fires it,
+      // so reflect the teardown in the store explicitly.
+      unbind();
+      if (!onSandboxRoute) setModuleActionDispatch(null);
+      socket.disconnect();
+      useGameStore.getState().setConnection('disconnected');
+    };
+  }, []);
+
+  // Dev harness for the bomb scene (Story 4.1) — no router exists yet; the
+  // real round flow mounts the scene from session state in later stories.
+  // Known gap: `vite preview` has no SPA fallback, so this 404s in the prod
+  // container (deferred-work.md) — acceptable for a dev-mode harness.
+  const isBombDevRoute =
+    window.location.pathname === '/dev/bomb' &&
+    (import.meta.env.DEV || connection === 'connected');
+
+  // Module sandbox (Story 5.1) — same dev-route pattern and the same known
+  // `vite preview` SPA-fallback gap as /dev/bomb (deferred-work.md).
+  const isSandboxDevRoute =
+    window.location.pathname === '/dev/sandbox' &&
+    (import.meta.env.DEV || connection === 'connected');
+
+  // Dev harness for the manual viewer (Story 5.2) — same pattern, same known
+  // vite-preview SPA-fallback gap as /dev/bomb.
+  const isManualDevRoute =
+    window.location.pathname === '/dev/manual' &&
+    (import.meta.env.DEV || connection === 'connected');
+
+  // Precedence: platform gate → loading screen → app shell.
+  return (
+    <PlatformGate>
+      {isSandboxDevRoute ? (
+        <SandboxHarness />
+      ) : isBombDevRoute ? (
+        <DevBombHarness />
+      ) : isManualDevRoute ? (
+        <DevManualHarness />
+      ) : connection !== 'connected' ? (
+        <LoadingScreen status={CONNECTING} />
+      ) : (
+        <AppShell header={<h1 className="font-display text-lg font-semibold">Bomb Squad</h1>}>
+          {/* Surface derives from the server snapshot — no router, no URL state.
+              'ended' shows the final scoreboard (Story 8.10). */}
+          {session === null ? (
+            <Landing />
+          ) : session.status === 'preparation' ? (
+            <Preparation />
+          ) : session.status === 'active' ? (
+            <ActiveRound />
+          ) : session.status === 'between-rounds' ? (
+            <Scoreboard />
+          ) : session.status === 'ended' ? (
+            <FinalScoreboard />
+          ) : (
+            <Lobby />
+          )}
+        </AppShell>
+      )}
+    </PlatformGate>
+  );
+}

@@ -1,0 +1,190 @@
+import { useEffect, useMemo, useState } from 'react';
+import type { ErrorPayload, TeamId } from '@bomb-squad/shared';
+import { CHAPTER_IDS } from '@bomb-squad/shared';
+import { useGameStore } from '../store/gameStore.js';
+import { useUiStore } from '../store/uiStore.js';
+import { getSocket } from '../net/socket.js';
+import ConfirmButton from './ConfirmButton.js';
+import Button from './Button.js';
+import { selectIsFacilitator } from './selectors.js';
+import ManualViewer from '../manual/ManualViewer.js';
+import { buildChapters } from '../manual/chapters.js';
+import { MANUAL_MODULES } from '../modules/index.js';
+import { upcomingDefuserId } from './rotation.js';
+import PrepBombView from './PrepBombView.js';
+import {
+  PREP_HEADING,
+  PREP_GUIDANCE,
+  ON_THE_BOMB_NEXT,
+  START_THE_ROUND,
+  PREP_MANUAL_LINE,
+  BACK_TO_LOBBY,
+  RESTING_THIS_ROUND,
+  TEAM_A,
+  TEAM_B,
+} from './copy.js';
+
+const TEAM_LABELS: Record<TeamId, string> = { A: TEAM_A, B: TEAM_B };
+
+/** ROUND_START rejections this surface owns (same filtering discipline as Lobby). */
+const START_ERROR_CODES: ReadonlySet<string> = new Set([
+  'NOT_IN_SESSION',
+  'NOT_FACILITATOR',
+  'CANNOT_START_ROUND',
+  'ROUND_START_FAILED',
+  // Story 8.9: an equalisation round refused for want of a volunteer Defuser —
+  // surface it here too (belt-and-suspenders; the Scoreboard picks the volunteer).
+  'EQUALISATION_VOLUNTEER_REQUIRED',
+  // PREPARATION_CANCEL rejections share this surface's banner (Story 8.3).
+  'CANNOT_CANCEL_PREP',
+  'PREPARATION_CANCEL_FAILED',
+]);
+
+/**
+ * Preparation phase (Story 8.3, FR8) — one component, role-gated content
+ * (EXPERIENCE.md IA #3). Prep has NO countdown: it lasts until the
+ * facilitator starts the round (GDD A9; "2–5 min" is guidance copy only).
+ *
+ * - Facilitator: guidance, the upcoming Defuser per team (derived with the
+ *   same rotation expression the server commits at ROUND_START), and the
+ *   "Start the round" two-step confirm.
+ * - Upcoming defuser: orientation line + the seam where 4.6's placeholder
+ *   bomb (module types, no values) will mount.
+ * - Experts / Spectators: the real manual (5.2). Chapters come from every
+ *   registered module's getManualPages() — the wiring seam 5.2 left open;
+ *   5.3+ chapters appear here automatically.
+ */
+export default function Preparation() {
+  const session = useGameStore((s) => s.session);
+  const selfId = useGameStore((s) => s.myPlayerId);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  // getManualPages() is pure and the registry is import-time static — rebuild
+  // only when the manual language changes. Filter to the 11 real chapters (drop
+  // sandbox-only `dev-demo`) so chapter numbers here match the active round's
+  // manual exactly (review 9.1 — the numbers players memorise in preparation
+  // must survive into the round).
+  const manualLocale = useUiStore((s) => s.manualLocale);
+  const chapters = useMemo(
+    () =>
+      buildChapters(MANUAL_MODULES.flatMap((m) => m.getManualPages(manualLocale))).filter((c) =>
+        (CHAPTER_IDS as readonly string[]).includes(c.chapterId),
+      ),
+    [manualLocale],
+  );
+
+  // ROUND_START has no ack — rejections arrive as typed ERRORs. Only
+  // start-class codes paint the banner; cleared on the facilitator's own
+  // next emit, never on room broadcasts (2.4 review patch pattern).
+  useEffect(() => {
+    const socket = getSocket();
+    const onError = (payload: ErrorPayload) => {
+      if (START_ERROR_CODES.has(payload.code)) setStartError(payload.message);
+    };
+    socket.on('ERROR', onError);
+    return () => {
+      socket.off('ERROR', onError);
+    };
+  }, []);
+
+  if (session === null) return null;
+
+  // Durable playerId (Story 2.7) from the reactive store, not socket.id.
+  // Story 9.5: facilitator authority is the durable-id flag, not role — a teamed
+  // facilitator (play role) still gets the operator prep view to start the round.
+  const isFacilitator = selectIsFacilitator(session, selfId);
+
+  // ACTIVE-TEAM-FIRST (Story 8.11, Model B): exactly one team plays this round.
+  // The active team shows its upcoming Defuser (mirrors startRound's pick via
+  // `upcomingDefuserId`); the other team is RESTING this round. A non-active team
+  // never has an "upcoming Defuser" here even though its rotation pointer holds a
+  // next slot — it is not playing.
+  // RETRY (Story 8.8): a retry re-arms the EXACT player who failed (`retryDefuserId`),
+  // NOT the rotation pick — under Model B (8.11) the pointer has advanced past that
+  // player, so `upcomingDefuserId` would show the next player (or null → "resting",
+  // making BOTH teams read as resting). When a retry is pending, the active team's
+  // upcoming Defuser is `retryDefuserId`.
+  const retryPending = session.retryingTeamId !== undefined;
+  const teams = Object.values(session.teams);
+  const upcoming = teams.map((team) => {
+    if (team.teamId !== session.activeTeamId) return { teamId: team.teamId, playerId: null };
+    const playerId = retryPending ? (session.retryDefuserId ?? null) : upcomingDefuserId(team);
+    return { teamId: team.teamId, playerId };
+  });
+  // Only the ACTIVE team's upcoming Defuser gets the PrepBombView orientation.
+  const isUpcomingDefuser = upcoming.some(
+    (u) => u.teamId === session.activeTeamId && u.playerId === selfId,
+  );
+
+  const startRound = () => {
+    setStartError(null);
+    getSocket().emit('ROUND_START');
+  };
+
+  const cancelPrep = () => {
+    setStartError(null);
+    getSocket().emit('PREPARATION_CANCEL');
+  };
+
+  // Story 9.5 (DD5, review-pinned by Jay): the facilitator ALWAYS gets the
+  // operator prep view — even when teamed and even when they are the upcoming
+  // Defuser (this branch deliberately precedes the isUpcomingDefuser /
+  // Expert-manual branches below). They are running the session during prep;
+  // they can study the manual between rounds. If the missing bomb-orientation
+  // (4.6) for a facilitator-Defuser ever hurts in play, a future story adds a
+  // combined surface — do not silently reorder these branches.
+  if (isFacilitator) {
+    return (
+      <div className="flex flex-1 items-start justify-center p-8">
+        <section className="w-full max-w-xl rounded-lg bg-surface-raised p-8">
+          <h2 className="mb-1 font-display text-lg font-semibold">{PREP_HEADING}</h2>
+          <p className="mb-6 text-sm text-ink-muted">{PREP_GUIDANCE}</p>
+
+          <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-ink-muted">
+            {ON_THE_BOMB_NEXT}
+          </h3>
+          <ul className="mb-6 flex flex-col gap-2" data-testid="upcoming-defusers">
+            {upcoming.map(({ teamId, playerId }) => (
+              <li key={teamId} className="flex items-center gap-3 rounded-md bg-surface px-4 py-3">
+                <span className="rounded-full border border-ink-muted px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-widest text-ink-muted">
+                  {TEAM_LABELS[teamId]}
+                </span>
+                <span className={playerId !== null ? 'font-semibold' : 'text-sm italic text-ink-muted'}>
+                  {playerId !== null
+                    ? (session.players[playerId]?.displayName ?? '—')
+                    : RESTING_THIS_ROUND}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          {startError !== null && (
+            <p role="alert" className="mb-3 text-sm text-led-red">
+              {startError}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <Button variant="secondary" onClick={cancelPrep}>
+              {BACK_TO_LOBBY}
+            </Button>
+            <ConfirmButton label={START_THE_ROUND} onConfirm={startRound} />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (isUpcomingDefuser) {
+    // Story 4.6: the upcoming Defuser orients on a value-free placeholder bomb
+    // (module types, no values) — the same immersive stage the live bomb uses.
+    return <PrepBombView />;
+  }
+
+  // Experts and Spectators browse the full manual during prep (EXPERIENCE.md).
+  return (
+    <div className="flex flex-1 flex-col">
+      <p className="px-8 pt-4 text-sm text-ink-muted">{PREP_MANUAL_LINE}</p>
+      <ManualViewer chapters={chapters} />
+    </div>
+  );
+}

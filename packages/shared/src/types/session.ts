@@ -1,0 +1,190 @@
+import type { RoundOutcome } from './round.js';
+
+export type PlayerRole = 'facilitator' | 'defuser' | 'expert' | 'spectator';
+
+/** Exactly two teams per session. */
+export type TeamId = 'A' | 'B';
+
+export type DifficultyTier = 'easy' | 'medium' | 'hard';
+
+export interface ModifierConfig {
+  asymmetricExpertRoles: boolean;
+  spectatorLifelines: boolean;
+}
+
+export interface RoundConfig {
+  difficulty: DifficultyTier;
+  /** Number of modules on the bomb. Range: 3–11. */
+  moduleCount: number;
+  /** Total round duration in milliseconds. */
+  timerMs: number;
+  /** Strike-based speed-up percentage per strike. Range: 0–50, compounding. Default: 25. */
+  strikeSpeedUpPct: number;
+  /** Override module pool by IDs. Undefined = use tier default pool. */
+  modulePool?: string[];
+  modifiers: ModifierConfig;
+}
+
+export interface PlayerInfo {
+  playerId: string;
+  displayName: string;
+  role: PlayerRole;
+  teamId?: TeamId;
+  isReady: boolean;
+}
+
+export interface TeamState {
+  teamId: TeamId;
+  /** Player IDs in join/relay order. */
+  relayOrder: string[];
+  /**
+   * Index into `relayOrder` for the team's NEXT natural Defuser.
+   *
+   * MODEL B SEMANTICS (Story 8.11): this is the count of NATURAL rounds the team
+   * has already played — equivalently, the index of the next un-played rotation
+   * slot. Starts 0; advances by one (in `resolveRound`) ONLY when THIS team plays
+   * a natural round. A team of `n` players therefore commits `relayOrder[0…n-1]`
+   * across its `n` natural rounds; once the index reaches `n` the team has
+   * EXHAUSTED its natural rotation (`startRound` reads it raw — an out-of-range
+   * index yields no natural pick). `startRound` reads `relayOrder[currentDefuserIndex]`
+   * for the active team; `upcomingDefuserId` mirrors it.
+   *
+   * This REPLACES Story 8.9's "all teams advance together / index === roundNumber-1
+   * / index = last-played slot" meaning: under Model B exactly one team is active
+   * per round, so pointers advance per-team and independently, not in lockstep.
+   */
+  currentDefuserIndex: number;
+  /** Cumulative defuse time in milliseconds across all completed rounds. */
+  cumulativeTimeMs: number;
+  /**
+   * Per-round elapsed-time history (Story 8.6). `roundTimesMs[i]` is the team's
+   * recorded displayed-elapsed for round i+1, appended by `resolveRound` as each
+   * round resolves. Maintained invariant: `cumulativeTimeMs === sum(roundTimesMs)`.
+   * Both are kept because `ScoreboardPayload` carries both and Story 8.5 already
+   * reads `cumulativeTimeMs`; this array is the per-round breakdown the
+   * between-round preview (8.6) and final scoreboard (8.10) render.
+   */
+  roundTimesMs: number[];
+  /**
+   * Per-round OUTCOME history (Story 8.10, AC-2). `roundOutcomes[i]` is the team's
+   * result for the same round as `roundTimesMs[i]` — kept in lock-step so
+   * `roundOutcomes.length === roundTimesMs.length` always holds (appended together
+   * on a first attempt; the last entry replaced together on a retry). Drives the
+   * final scoreboard's per-round defused ✓ / detonated ✗ icons (resolves
+   * deferred-work.md:240 — outcome was previously not stored). `RoundOutcome` =
+   * `'defused' | 'exploded' | 'time-expired'`. Empty `[]` at every construction site.
+   */
+  roundOutcomes: RoundOutcome[];
+  /**
+   * Number of odd-team equalisation rounds this team has played (Story 8.9, FR44).
+   * A shorter team owes `max(teamA.len, teamB.len) - this.relayOrder.length`
+   * equalisation rounds; this counter increments (in `startRound`) each time an
+   * equalisation round is committed for the team, so `equalisationRoundsOwed`
+   * converges to 0 and `isRelayComplete` becomes true once every owed round is
+   * played. The longer team (and equal-size teams) never owe any, so this stays 0.
+   * Default 0 at every construction site (a fresh team owes nothing yet).
+   */
+  equalisationRoundsPlayed: number;
+  /**
+   * The Facilitator-assigned volunteer Defuser for the team's NEXT equalisation
+   * round (Story 8.9 AC-2, FR44). Set explicitly via the `TEAM_ASSIGN` event while
+   * between rounds / in preparation (the documented exception to "rotation is the
+   * sole Defuser authority" — 8.6 decision (c)); consumed and cleared by
+   * `startRound` when the equalisation round commits. Undefined when no volunteer
+   * is pending. The server NEVER auto-picks it — an equalisation `ROUND_START`
+   * refuses until the Facilitator designates one (GDD: "Facilitator assigns a
+   * volunteer Defuser").
+   */
+  equalisationVolunteerId?: string;
+}
+
+export interface SessionState {
+  sessionId: string;
+  /** Unguessable join code (≥6 chars, crypto-random — never sequential). */
+  joinCode: string;
+  status: 'lobby' | 'preparation' | 'active' | 'between-rounds' | 'ended';
+  config: RoundConfig;
+  players: Record<string, PlayerInfo>;
+  teams: Partial<Record<TeamId, TeamState>>;
+  roundNumber: number;
+  /**
+   * Pause freeze (Story 8.7, FR13). ORTHOGONAL to `status` — a pause freezes ON
+   * TOP of `active`/`between-rounds`, it is NOT a status value, so the session
+   * remembers (and resumes into) the exact phase it paused from. `null` = running.
+   * The server-epoch ms the pause began (parallels the per-team
+   * `TimerState.pausedAt` that freezes a live round's countdown).
+   */
+  pausedAt: number | null;
+  /**
+   * Why the session is paused (Story 8.7). `'facilitator'` = a manual between-rounds
+   * hold (resume is a free Facilitator click — no ready gate). `'disconnect'` = a
+   * mid-round participant dropped (resume requires the Facilitator PLUS all
+   * participants ready). `null` when running. The kind drives the resume gate.
+   */
+  pauseKind: 'facilitator' | 'disconnect' | null;
+  /**
+   * Durable player ids currently dropped during a mid-round disconnect pause
+   * (Story 8.7). Drives the amber strip's "who dropped" and is cleared per-player
+   * as each reconnects (the reconnect restore re-sends their BOMB_INIT). Empty
+   * unless `pauseKind === 'disconnect'`.
+   */
+  disconnectedPlayerIds: string[];
+  /**
+   * Transient retry intent (Story 8.8, FR14). Set by the pure `retryRound`
+   * transition when the Facilitator triggers a retry of a FAILED round
+   * (`between-rounds → preparation`, reusing the SAME `roundNumber` so the seed
+   * chain reproduces the identical bomb). Names the single team re-attempting the
+   * round; the other team rests (reusing the Story 8.9 resting-team machinery).
+   * Consumed and cleared by `startRound` when the retry round arms (and by
+   * `cancelPreparation` if the retry prep is cancelled). Undefined when no retry
+   * is pending. ORTHOGONAL to the rotation pointer — a retry does NOT advance
+   * `currentDefuserIndex` or `roundNumber` (it is the same round, same Defuser).
+   * Mirrors the `TeamState.equalisationVolunteerId` "explicit intent consumed by
+   * startRound" precedent.
+   */
+  retryingTeamId?: TeamId;
+  /**
+   * The EXACT Defuser to re-arm for a retry (Story 8.8, set alongside
+   * `retryingTeamId`). The just-resolved round's `RoundState.defusers[teamId]` —
+   * the player who actually played the failed round. Stored explicitly because
+   * under Model B (Story 8.11) the rotation pointer ADVANCES at resolve, so by the
+   * time the retry opens `currentDefuserIndex` already points at the NEXT player;
+   * recomputing the Defuser from the index would arm the wrong one (and is
+   * ambiguous at the rotation boundary / for an equalisation round). `startRound`'s
+   * retry branch commits THIS id and clears it; `cancelPreparation` clears it too.
+   * Undefined when no retry is pending.
+   */
+  retryDefuserId?: string;
+  /**
+   * The single ACTIVE team for the round about to play / playing (Story 8.11,
+   * Model B). Transient per-round intent: `openPreparation` SELECTS it (via the
+   * pure `selectActiveTeam` snake rule) when prep opens, `startRound` CONSUMES it
+   * (arms ONLY this team — its bomb, its timer, its Defuser; the other team rests),
+   * and the client reads it off the `SESSION_STATE` broadcast to route the resting
+   * team to a spectate surface. `undefined` in `lobby`/`between-rounds` before a
+   * team is selected. Mirrors the `retryingTeamId` "explicit intent on SessionState,
+   * consumed by startRound" precedent; a retry sets it to the retrying team.
+   */
+  activeTeamId?: TeamId;
+  /**
+   * The durable player id (Story 2.7) that holds Facilitator session authority
+   * (Story 9.5, FR48). Set ONCE at SESSION_CREATE from the creating client's
+   * minted id and NEVER changed thereafter. This is the SOLE source of
+   * facilitator authority — every authority gate (TEAM_ASSIGN, PREPARATION_*,
+   * ROUND_*, FACILITATOR_PAUSE/RESUME, SESSION_END, PLAYER_REMOVE) keys on
+   * `playerId === facilitatorPlayerId`, NOT on `role`.
+   *
+   * ORTHOGONAL to `role`/`teamId`: when the Facilitator opts onto a team their
+   * roster `role` becomes a real play role (defuser/expert/spectator) and their
+   * `teamId` is set — exactly like any player — but their authority is unchanged
+   * because it lives here. Critically this survives the `startRound`
+   * role-reconciliation mint (`startRound.ts` overwrites a teamed player's role,
+   * which would otherwise destroy a `'facilitator'` role marker).
+   *
+   * Broadcast wholesale via `SESSION_STATE`, so the client gets it for free and
+   * derives `isSessionFacilitator` with the same shared helper (no new event).
+   * Optional in the type for backward-compat with pre-9.5 session snapshots; the
+   * helper is fail-closed (a missing field locks authority, never grants it).
+   */
+  facilitatorPlayerId?: string;
+}

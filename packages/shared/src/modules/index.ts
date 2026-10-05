@@ -1,0 +1,21 @@
+/**
+ * Per-module pure logic (state/action types, generate, solve, reducer, manual
+ * data) — the shared half of the module plugin contract (architecture
+ * Pattern 3). Each module is one additive directory; the client binds
+ * rendering in apps/client/src/modules/<id>/, the server registers the
+ * reducer in MODULE_REDUCERS. Nothing outside a module's own directory
+ * changes when a module is added.
+ */
+export * from './dev-demo/index.js';
+export * from './wires/index.js';
+export * from './the-button/index.js';
+export * from './passwords/index.js';
+export * from './keypads/index.js';
+export * from './whos-on-first/index.js';
+export * from './wire-sequences/index.js';
+export * from './mazes/index.js';
+export * from './complicated-wires/index.js';
+export * from './simon-says/index.js';
+export * from './memory/index.js';
+export * from './morse-code/index.js';
+export * from './registry.js';

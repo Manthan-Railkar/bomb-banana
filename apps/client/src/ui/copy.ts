@@ -1,0 +1,268 @@
+/**
+ * Operator-world microcopy — dry / deadpan / period-appropriate (EXPERIENCE.md
+ * "Voice and Tone"). Single home for the strings used by the UI shell so later
+ * Epic-2 screens reuse the same voice. Not an i18n system — just one source.
+ */
+export const CONNECTING = 'Connecting…';
+export const GATE_RESIZE = 'Resize your window — Bomb Squad needs more room';
+export const GATE_MOBILE = 'Bomb Squad is a desktop experience';
+export const CONFIRM = 'Confirm';
+export const CANCEL = 'Cancel';
+
+// Landing (Story 2.2)
+export const HOST_A_SESSION = 'Host a session';
+export const HOST_PITCH = 'No accounts. One code, one link — your team plays in the browser.';
+export const HOST_BUSY = 'Opening a line…';
+export const HOST_FAILED = 'Could not open a session. Try again.';
+
+// Join panel (Story 2.3) — mockup "1. Landing" copy.
+export const ENTER_A_JOIN_CODE = 'Enter a join code';
+export const JOIN_HELP = 'Six characters, from your facilitator.';
+export const JOIN_HELP_EMPHASIS = 'Submits on the sixth.';
+export const YOUR_NAME = 'Your name';
+export const ROLE_DEFUSER = 'Defuser';
+export const ROLE_EXPERT = 'Expert';
+export const ROLE_SPECTATOR = 'Spectator';
+export const JOIN_INCOMPLETE = 'Add a name and pick a role — then it sends itself.';
+export const JOIN_BUSY = 'Checking the code…';
+export const JOIN_TIMEOUT = 'No answer from the server. Try again.';
+export const OR_DIVIDER = 'or';
+
+// Lobby roster (Story 2.3) — mockup "2. Lobby" roster panel.
+export const TEAM_ROSTER = 'Team roster';
+export const YOU_TAG = 'You';
+export const ROLE_FACILITATOR = 'Facilitator';
+// Story 9.5: a teamed facilitator's role label reads Defuser/Expert, so a small
+// "Host" chip (keyed on the facilitatorPlayerId flag) keeps them identifiable.
+export const HOST_TAG = 'Host';
+
+// Facilitator player controls (Story 2.7) — secondary-confirm Remove on a row.
+export const REMOVE_PLAYER = 'Remove';
+export const REMOVE_CONFIRM = 'Remove';
+
+// Share-link Join button (Story 2.7) — shown when a prefilled code is complete.
+export const JOIN_NOW = 'Join';
+
+// Lobby ready + mic check (Story 2.5). Ready is informational/self-toggle; the
+// speaker dot is the lobby's only sanctioned green ("audible"). Names always
+// shown beside the dot (colorblind floor). Connect microcopy reuses VOICE_*.
+export const READY = 'Ready';
+export const MARK_READY = 'Mark ready';
+export const READY_INDICATOR = 'Ready';
+export const MIC_CHECK_CTA = 'Join mic check';
+// Mic-check connect microcopy — lobby-surface variants (the VOICE_* strings name
+// the Bomb Room, which is the wrong surface for the pre-game lobby mic check).
+export const MIC_CHECK_CONNECTING = 'Joining mic check…';
+export const MIC_CHECK_CONNECTED = 'Mic check connected.';
+export const WAITING_FOR_TEAM = 'Waiting for your team.';
+// Accessible labels for the per-row speaker dot (never icon-only).
+export const SPEAKING = 'speaking';
+export const MIC_QUIET = 'quiet';
+// Pill fallback when a transmitting voice identity isn't in the durable roster
+// (non-roster participant / momentarily stale roster) — never show a raw id.
+export const SPEAKER_UNKNOWN = 'Someone';
+
+// Team assignment (Story 2.4) — mockup "6. Facilitator Dashboard" team badges.
+export const TEAM_A = 'Team A';
+export const TEAM_B = 'Team B';
+export const UNASSIGNED = 'Unassigned';
+
+// Lobby share panel (Story 2.2) — EXPERIENCE.md: "Bring them in", never "Invite Players".
+export const BRING_THEM_IN = 'Bring them in';
+export const SHARE_SUB =
+  "Share the join code or link. Players land here as they enter — assign roles once everyone's in.";
+export const COPY_LINK = 'Copy link';
+export const COPIED = 'Copied';
+
+// Preparation phase (Story 8.3) — prep has no countdown; the facilitator ends
+// it by starting the round (GDD A9: 2–5 min is guidance, not enforcement).
+export const OPEN_PREPARATION = 'Open preparation';
+export const PREP_NEEDS_TEAM = 'Assign at least one player to a team first.';
+// Min-team-size gate (Story 8.9 follow-up) — a team of 1 is a lone Defuser with
+// no Expert to read the manual. A single-team session is fine if that team has ≥2.
+export const PREP_TEAM_TOO_SMALL =
+  'Each team needs at least 2 players — one defuses while the rest read the manual.';
+export const BACK_TO_LOBBY = 'Back to lobby';
+export const PREP_HEADING = 'Preparation';
+export const PREP_GUIDANCE =
+  'Walk them through the manual — two to five minutes is the sweet spot. Start when they stop arguing.';
+export const ON_THE_BOMB_NEXT = 'On the bomb next';
+export const START_THE_ROUND = 'Start the round';
+export const PREP_MANUAL_LINE = "You're on the manual. Read fast.";
+// Story 4.6: the upcoming Defuser's prep surface is now the placeholder bomb
+// itself (PrepBombView), not a text line — the former PREP_DEFUSER_LINE /
+// PREP_DEFUSER_PLACEHOLDER copy is retired.
+
+// Active round (Story 8.3) — the teamless-bomb-role fallback line; Story 9.4
+// replaced the spectator/resting standby texts with the composed lounge.
+export const ROUND_IN_PROGRESS = 'Round in progress.';
+
+// Round resolution (Story 8.5) — all-caps, terminal punctuation (EXPERIENCE.md
+// round-result copy). DETONATED = 3rd strike; TIME EXPIRED = clock hit 0.
+export const RESULT_DEFUSED = 'DEFUSED.';
+export const RESULT_DETONATED = 'DETONATED.';
+export const RESULT_TIME_EXPIRED = 'TIME EXPIRED.';
+// Interim post-round line (Story 8.5) — shown briefly on the resolution banner
+// in the window between the scene hold and the between-rounds SESSION_STATE
+// arriving. No longer terminal: the Scoreboard surface (Story 8.6) takes over
+// once the server broadcasts 'between-rounds'. Deliberately NOT a scoreboard.
+export const BETWEEN_ROUNDS_PLACEHOLDER = 'Round over. Stand by for the next one.';
+
+// Between-rounds scoreboard preview (Story 8.6). Operator-world voice. This is a
+// PREVIEW, not the final scoreboard (8.10) — copy reads "standings"/"leading",
+// never "winner".
+export const SCOREBOARD_EYEBROW = 'Between rounds';
+export const SCOREBOARD_HEADING = 'Standings';
+export const SCOREBOARD_LEADING = 'Leading';
+export const SCOREBOARD_TOTAL = 'Total';
+export const SCOREBOARD_ROUND_LABEL = 'Round';
+// Facilitator advance control — opens the next round's Preparation phase.
+export const START_NEXT_ROUND = 'Start next round';
+// Non-facilitator standby line while the scoreboard is up.
+export const BETWEEN_ROUNDS_WAITING = 'Waiting for the facilitator to start the next round.';
+
+// Odd-team equalisation + relay completion (Story 8.9, FR43/FR44) — facilitator
+// surfaces on the between-rounds scoreboard. The shorter team plays one extra
+// round with a Facilitator-chosen volunteer Defuser; once everyone has defused
+// the relay is complete (session-end is Story 8.10).
+export const EQUALISATION_HEADING = 'Equalisation round';
+export const EQUALISATION_PROMPT = (team: string): string =>
+  `${team} plays an extra round to even the count. Choose the volunteer Defuser:`;
+export const EQUALISATION_NEEDS_VOLUNTEER = 'Choose a volunteer Defuser to start the equalisation round.';
+export const RELAY_COMPLETE_NOTICE = 'The relay is complete — every player has defused once.';
+export const RESTING_THIS_ROUND = 'Resting this round';
+
+// Session end + final scoreboard (Story 8.10). The relay-complete notice gains a
+// facilitator "End session" action that archives the run and reveals the FINAL
+// scoreboard — copy here reads "winner"/"final" (the preview reads "leading").
+export const END_SESSION = 'End session & view results';
+export const FINAL_EYEBROW = 'Final results';
+export const FINAL_HEADING = 'Final scoreboard';
+/** `team` is the already-formatted label (e.g. "Team A"). */
+export const FINAL_WINNER = (team: string): string => `${team} wins`;
+export const FINAL_DRAW = "It's a draw";
+export const FINAL_COMPLETE = 'Session complete';
+export const FINAL_WINNER_BADGE = 'Winner';
+export const FINAL_DEFUSED_LABEL = 'Defused';
+export const FINAL_FAILED_LABEL = 'Detonated';
+
+// Sequential round orchestration (Story 8.11, Model B) — one team plays per round
+// while the other rests/spectates. The between-rounds scoreboard surfaces who is
+// up next so the Facilitator's advance reads as a hand-off; the resting team's
+// in-round surface tells them to watch rather than stranding them on a dead bomb.
+/** `team` is the already-formatted label (e.g. "Team A"). */
+export const UP_NEXT = (team: string): string => `Up next: ${team}`;
+
+// Retry a failed round (Story 8.8, FR14) — facilitator-only affordance shown on
+// the between-rounds scoreboard when a team failed the just-resolved round. The
+// retry re-runs the IDENTICAL bomb (same seed) and keeps the better of the two
+// times. Operator-world voice; the action is confirm-gated (ConfirmButton).
+export const RETRY_ROUND = 'Retry round';
+/** `team` is the already-formatted label (e.g. "Team A"). */
+export const RETRY_ROUND_TEAM = (team: string): string => `Retry round — ${team}`;
+
+// Bomb Room voice (Story 3.2) — the join affordance + EXPERIENCE.md voice
+// microcopy. The speaker pill + mute toggle are Story 3.4, not here.
+export const VOICE_CONNECT_CTA = 'Connect to Bomb Room voice';
+export const VOICE_CONNECTING = 'Connecting to Bomb Room…';
+export const VOICE_CONNECTED = 'Bomb Room voice connected.';
+// Non-blocking failure microcopy — the game keeps running (AC #4); dismissible.
+export const VOICE_UNAVAILABLE = 'Voice unavailable — game continues without it';
+export const VOICE_DISMISS = 'Dismiss';
+// Graceful degradation (Story 3.6). Manual reconnect after a drop/failure — stays
+// reachable even after the banner is dismissed (no auto-backoff; that's 10-3).
+// The blocked-autoplay affordance restores remote audio with a user gesture.
+export const VOICE_RECONNECT = 'Reconnect voice';
+export const VOICE_ENABLE_AUDIO = 'Click to enable audio';
+
+// Spectator Lounge voice (Story 3.3, extended by 3.7). The lounge is now
+// BIDIRECTIONAL among its members: a spectator or resting-team player HEARS the
+// active team's Bomb Room (forwarded one-way by the server bridge) AND can talk
+// to the others in the lounge — but never INTO the Bomb Room (the boundary is
+// structural). Copy says "lounge", never "connect to"/"in" the Bomb Room. Failure
+// reuses the shared VOICE_UNAVAILABLE + VOICE_DISMISS.
+export const VOICE_LOUNGE_CTA = 'Join the Spectator Lounge';
+export const VOICE_LOUNGE_CONNECTING = 'Connecting to the lounge…';
+export const VOICE_LOUNGE_CONNECTED = 'In the lounge — hearing the Bomb Room.';
+
+// Spectator Lounge composed surface (Story 9.4). Neutral lounge/voice indicator —
+// DD5: NOT a literal "Listen-only" pill (Story 3.7 made the lounge bidirectional,
+// so that label would misdescribe shipped behaviour). Live voice state is carried
+// by the existing SpeakerIndicator + MuteControl overlays, not by this pill.
+export const LOUNGE_INDICATOR = 'Spectator Lounge';
+/** Left-pane tag naming the team being watched. */
+export const LOUNGE_WATCHING_TEAM = (teamName: string): string => `Watching · Team ${teamName}`;
+export const LOUNGE_READ_ONLY = 'Read-only';
+/** Per-Expert card header chapter label: "Ch. {n} · {title}" (or a dash when unopened). */
+export const LOUNGE_EXPERT_CHAPTER = (chapterNumber: number, chapterTitle: string): string =>
+  `Ch. ${chapterNumber} · ${chapterTitle}`;
+export const LOUNGE_EXPERT_CHAPTER_NONE = '—';
+export const LOUNGE_EXPERT_FOLLOWING = '🔒 following';
+/** Fail-soft display name when an Expert's roster name is somehow absent (never the raw id). */
+export const LOUNGE_EXPERT_FALLBACK_NAME = 'Expert';
+
+// In-round speaker indicator + self-mute (Story 3.4). The pill always shows the
+// name (never icon-only); SPEAKING is reused for its accessible label. The mute
+// control carries an aria-label that flips with state — operator-world, dry.
+export const MUTE_SELF = 'Mute';
+export const UNMUTE_SELF = 'Unmute';
+export const MUTED_STATUS = 'Muted';
+
+// Round configuration dashboard (Story 8.1) — facilitator-only panel in the
+// lobby. Operator-world voice; no bomb-chassis vocabulary.
+export const ROUND_CONFIG_TITLE = 'Round configuration';
+export const DIFFICULTY_LABEL = 'Difficulty tier';
+export const TIER_EASY = 'Easy';
+export const TIER_MEDIUM = 'Medium';
+export const TIER_HARD = 'Hard';
+export const TIER_EASY_HINT = '3–4 mod';
+export const TIER_MEDIUM_HINT = '5–6 mod';
+export const TIER_HARD_HINT = '7–9 mod';
+export const TIMER_LABEL = 'Timer';
+export const MODULE_COUNT_LABEL = 'Module count';
+export const MODULE_COUNT_DECREMENT = 'Decrease module count';
+export const MODULE_COUNT_INCREMENT = 'Increase module count';
+export const STRIKE_SPEEDUP_LABEL = 'Strike speed-up';
+export const MODIFIER_ASYMMETRIC = 'Asymmetric Expert roles';
+export const MODIFIER_ASYMMETRIC_SUB = 'Split manual chapters across Experts. Off for first-timers.';
+export const MODIFIER_LIFELINES = 'Spectator lifelines';
+export const MODIFIER_LIFELINES_SUB = 'Let spectators spend tokens to send hints.';
+// Story 9.2: passive lifeline-token counter shown to watching players when the
+// Spectator Lifelines modifier is on. {n} is interpolated at render. The send
+// affordance (button + hint list) is Story 9.3 — this is the balance only.
+export const LIFELINE_TOKENS_LABEL = (n: number): string => `Lifeline tokens: ${n}`;
+// Story 9.3: the spectator's send affordance (LifelinePanel) + Bomb-Room toast.
+// The per-prompt labels come from the shared LIFELINE_PROMPTS list (id → text) —
+// never duplicated here, so the wire and the picker read the SAME source.
+export const LIFELINE_SEND_CTA = 'Send a lifeline';
+export const LIFELINE_PICK_PROMPT = 'Pick a tip to send';
+export const LIFELINE_PANEL_CANCEL = 'Cancel';
+export const LIFELINE_SEND_CONFIRM = 'Send tip';
+/** Confirm-step line; `nAfter` = the sender's balance AFTER this send (current − 1). */
+export const LIFELINE_CONFIRM_LINE = (nAfter: number): string =>
+  `Send this tip? You have ${nAfter} ${nAfter === 1 ? 'token' : 'tokens'} after.`;
+/** Bomb-Room toast copy. Text is resolved from the shared prompt list, never the
+ * wire. An empty `fromName` (anomalous — the server passes the display name
+ * through) composes the generic line instead of "Spectator  sent a tip". */
+export const LIFELINE_TOAST_TEXT = (fromName: string, tip: string): string =>
+  fromName === ''
+    ? `A spectator sent a tip: ${tip}`
+    : `Spectator ${fromName} sent a tip: ${tip}`;
+export const MODULE_POOL_LABEL = 'Module pool';
+export const MODULE_POOL_SUB = 'Tap to include or exclude. Greyed modules arrive in a later release.';
+export const MODULE_POOL_COMING_SOON = 'coming soon';
+
+// Paused / disconnect (Story 8.7) — operator-world voice, deadpan. The
+// facilitator pause is a "break-glass" hold; the disconnect pause is the amber
+// auto-pause naming who dropped. {name} is interpolated at render.
+export const FACILITATOR_PAUSE_CTA = 'Pause';
+// Story 9.5 (AC-3/DD1): the compact overlay's Pause is confirm-guarded (arm→confirm)
+// so a playing facilitator can't detonate the round with one stray click.
+export const FACILITATOR_PAUSE_CONFIRM_CTA = 'Confirm pause';
+export const PAUSE_RESUME_CTA = 'Resume';
+export const PAUSE_HELD = 'Holding the clock.';
+export const PAUSE_DROPPED_PREFIX = 'dropped — holding the clock.';
+export const PAUSE_WAITING_READY = 'All players must be ready to resume.';
+export const PAUSE_WAITING_FACILITATOR = 'Holding the clock — waiting for the facilitator to resume.';
+export const PAUSE_READY_CTA = "I'm ready";
+export const PAUSE_READY_DONE = 'Ready — waiting for the others.';

@@ -1,0 +1,223 @@
+services:
+  # ── Data stores ─────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      # Single source of truth for the DB password — the server's DATABASE_URL
+      # override below is built from the same variable, so changing it in .env
+      # changes both sides at once.
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: bombsquad
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Voice infrastructure ─────────────────────────────────────────────────────
+
+  livekit:
+    # v1.13.x speaks the same protocol generation (17) as the browser SDK
+    # livekit-client@2.19.x — the old v1.8 SFU (protocol 15) made the modern
+    # client probe a missing /rtc/v1 path and reconnect-loop every ~15s. Tokens
+    # minted by livekit-server-sdk@2.15 are accepted unchanged across these
+    # versions (JWT format is stable).
+    image: livekit/livekit-server:v1.13.1
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    environment:
+      # Keys are set here rather than in livekit.yaml so secrets stay in .env.
+      # LiveKit requires EXACTLY "key: secret" with the space after the colon —
+      # without it the server crash-loops "Could not parse keys".
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      # LiveKit RTP/ICE media on a SINGLE UDP mux port (7882). An SFU muxes all
+      # participants over one port, so 16 players need 1 port, not a range. One
+      # forward (vs 200) also keeps the full stack under Docker Desktop's WSL2
+      # forwarded-port cap. Must match rtc.udp_port in livekit.yaml.
+      - "7882:7882/udp"
+    healthcheck:
+      # LiveKit HTTP server on 7880 responds to GET / with a version/status page.
+      # Use wget from BusyBox (Alpine-based image); exit codes: 0=ok, 4=conn fail.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7880/ 2>/dev/null && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    # Pass TURN_SECRET from .env as a CLI arg so it's never baked into an image.
+    # List form (not a folded string): Compose substitutes ${VAR} per element,
+    # so a secret containing whitespace cannot word-split into extra args.
+    command:
+      - "-n"
+      - "--log-file"
+      - "stdout"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET:-changeme}"
+      - "--realm=bombsquad.local"
+      - "--total-quota=100"
+      - "--min-port=40000"
+      - "--max-port=40031"
+      - "--fingerprint"
+      - "--no-tlsv1"
+      - "--no-tlsv1_1"
+      # Advertised relay address in XOR-RELAYED-ADDRESS (Story 3.6). Without it,
+      # coturn advertises the container-internal RFC1918 IP and external clients
+      # send relay traffic to an unroutable address. Env-driven: set
+      # TURN_EXTERNAL_IP to the host's PUBLIC IP in production. Defaults to the
+      # loopback so the published-port localhost dev stack (host:3478 →
+      # container, host:40000-40031 → container) advertises a host-reachable
+      # address out of the box — an empty `--external-ip=` arg is malformed, so a
+      # concrete default beats an empty value (a wider NAT/TLS-turns hardening is
+      # Story 10-3).
+      - "--external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}"
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      # Publish the TURN relay range — without this, allocated relay ports are
+      # unreachable from external clients and the TURN fallback path is dead.
+      # 32 ports = one relay allocation per peer for a full 16-player session
+      # with 2x headroom. Disjoint from LiveKit's mux port (7882).
+      - "40000-40031:40000-40031/udp"
+    healthcheck:
+      # Debian-based coturn image has bash; /dev/tcp probe opens a TCP socket.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3478' 2>/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Application ──────────────────────────────────────────────────────────────
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override .env localhost URLs with compose service-name hostnames.
+      # The .env localhost values are for host-run dev only; inside the compose
+      # network each service is reachable by its service name.
+      REDIS_URL: "redis://redis:6379"
+      DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/bombsquad"
+      # LIVEKIT_URL is the BROWSER dial target — handed verbatim to the client in
+      # the VOICE_TOKEN grant, so it must be reachable FROM THE CLIENT. The compose
+      # service name `livekit` is unresolvable in a browser (ERR_NAME_NOT_RESOLVED)
+      # — use the published host URL from .env instead.
+      LIVEKIT_URL: "${LIVEKIT_URL:-ws://localhost:7880}"
+      # LIVEKIT_SERVER_URL is the SERVER-to-LiveKit dial target (Story 3.7): the
+      # audio-bridge relay bot connects to LiveKit FROM THE SERVER over the compose
+      # network, so this uses the `livekit` service name (the bot derives its ws://
+      # signaling URL from this by swapping http→ws) — NOT the browser ws://localhost
+      # URL above. The server DOES now connect to LiveKit — it no longer only signs
+      # JWTs locally.
+      LIVEKIT_SERVER_URL: "http://livekit:7880"
+    ports:
+      # Publish server port to host for smoke-test health probing and debugging.
+      # Production may remove this and route everything through Caddy (port 443).
+      # NOTE: this mapping is interpolated by Compose, which prefers a
+      # shell-exported PORT over .env's PORT. Set PORT in .env only — a
+      # divergent shell export maps a port the server doesn't listen on.
+      - "${PORT:-3001}:${PORT:-3001}"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /health returns 200 {"status":"ok"} when both Redis and Postgres probes pass.
+      # The app's io.use readiness gate also blocks Socket.IO until stores are healthy.
+      # Use 127.0.0.1, not localhost: the server binds IPv4 (0.0.0.0) only, but in the
+      # container `localhost` resolves to IPv6 [::1] first → connection refused forever.
+      # $$PORT defers expansion to the container shell, so the probe always hits the
+      # port the server actually listens on (env_file value), not Compose's view.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${PORT:-3001}/health 2>/dev/null | grep -q '\"ok\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  client:
+    build:
+      context: .
+      dockerfile: apps/client/Dockerfile
+      args:
+        # No-voice tunnel deploy sets VITE_VOICE_ENABLED=false in .env; defaults
+        # to true (full-featured build) when unset.
+        VITE_VOICE_ENABLED: "${VITE_VOICE_ENABLED:-true}"
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5173/ 2>/dev/null | head -1 | grep -qiE 'html|<!DOCTYPE' || wget -q --spider http://localhost:5173/ 2>/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Reverse proxy + TLS ───────────────────────────────────────────────────────
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      # The Caddyfile proxies to server:{$PORT:3001} — without this, the
+      # placeholder always falls back to 3001 even when .env sets PORT.
+      PORT: "${PORT:-3001}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      # Health-gated: Caddy's own healthcheck only proves the admin API is up,
+      # so don't start it until the upstreams it proxies are actually healthy.
+      server:
+        condition: service_healthy
+      client:
+        condition: service_healthy
+    healthcheck:
+      # Caddy admin API at :2019 (HTTP, no TLS). The admin root `/` returns 404 —
+      # probe `/config/`, which returns the live JSON config (always contains an
+      # "apps" block once the Caddyfile loads) and proves Caddy is up and running.
+      # Use 127.0.0.1, not localhost: `admin localhost:2019` binds IPv4 only, but
+      # BusyBox wget resolves `localhost` to [::1] first → connection refused.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ 2>/dev/null | grep -q apps"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  redis-data:
+  postgres-data:
+  caddy-data:
+  caddy-config:

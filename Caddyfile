@@ -1,0 +1,43 @@
+# Bomb Squad reverse proxy.
+# Local dev uses "tls internal" (Caddy generates a local CA cert).
+# Production: replace ":443" block header with your domain (e.g. "bombsquad.example.com")
+# and remove "tls internal" — Caddy will obtain a Let's Encrypt cert automatically.
+
+{
+  # Caddy admin API on 2019 (HTTP only) — used by the in-container health check.
+  # Bound to localhost so other containers on the compose network can't reach
+  # the (unauthenticated) admin API and reconfigure the proxy.
+  admin localhost:2019
+}
+
+# Redirect HTTP → HTTPS.
+# The LOCALHOST voice check needs a plain-http origin (so the page can open the
+# `ws://localhost:7880` LiveKit socket without a mixed-content block); that is
+# provided by `Caddyfile.dev` via `docker-compose.override.yml`, NOT here — this
+# production file keeps the HTTPS redirect so a deploy is secure by default.
+:80 {
+  redir https://{host}{uri} permanent
+}
+
+:443 {
+  # A bare ":443" block has no hostname, so plain "tls internal" provisions no
+  # certificate and every TLS handshake fails. on_demand issues an internal-CA
+  # cert for whatever SNI the client sends (localhost, an IP, a LAN name) at
+  # handshake time — correct for a catch-all local-dev block. Production
+  # replaces ":443" with a real domain and drops this whole tls directive.
+  tls internal {
+    on_demand
+  }
+
+  # ── Socket.IO — Caddy handles the WebSocket upgrade natively ────────────────
+  @socketio {
+    path /socket.io/*
+  }
+  reverse_proxy @socketio server:{$PORT:3001}
+
+  # ── Health endpoint (for external probes through TLS) ───────────────────────
+  reverse_proxy /health server:{$PORT:3001}
+
+  # ── Client SPA (everything else) ────────────────────────────────────────────
+  reverse_proxy /* client:5173
+}
